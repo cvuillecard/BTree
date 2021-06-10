@@ -3,38 +3,42 @@ use std::vec::Vec;
 // use std::collections::hash_map::DefaultHasher;
 // use std::any::*;
 // use std::ops::*;
-use std::cmp::{PartialEq, PartialOrd };
+use std::cmp::{PartialEq, PartialOrd};
 use std::convert::{From, Into};
 use std::iter::FromIterator;
-use std::fmt;
+use std::{fmt, thread};
+use std::borrow::Borrow;
+use std::sync::mpsc::{Sender, Receiver};
+use std::sync::mpsc;
+use std::slice::ChunksMut;
 
 pub const MAX_SIZE: usize = 500000;
 pub const ARITY: usize = 2;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Node<T> {
     data: T
 }
 
-impl <T: Sized + PartialOrd + PartialEq> Node<T> {
+impl<T: 'static + Sized + PartialOrd + PartialEq + Sync + Send> Node<T> {
     pub fn new(data: T) -> Self {
-            Node { data }
+        Node { data }
     }
 }
 
-impl <T: Sized + PartialOrd + PartialEq> From<T> for Node<T> { fn from(data: T) -> Self { Node { data } } }
+impl<T: 'static + Sized + PartialOrd + PartialEq + Sync + Send> From<T> for Node<T> { fn from(data: T) -> Self { Node { data } } }
 // impl <T: PartialOrd + PartialEq> Into<T> for Node<T> { fn into(self) -> T where T: PartialOrd + PartialEq { self.data } }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct VecBtree<T> {
     buf: Vec<Node<T>>
 }
 
-pub trait FromIteratorSized<T> : FromIterator<T> {
-    fn from_iter_sized<I: IntoIterator<Item = T>>(iter: I, size: usize) -> Self;
+pub trait FromIteratorSized<T>: FromIterator<T> {
+    fn from_iter_sized<I: IntoIterator<Item=T>>(iter: I, size: usize) -> Self;
 }
 
-impl <T: Sized + PartialOrd + PartialEq> FromIteratorSized<T> for VecBtree<T> {
+impl<T: 'static + Sized + PartialOrd + PartialEq + Sync + Send> FromIteratorSized<T> for VecBtree<T> {
     fn from_iter_sized<I: IntoIterator<Item=T>>(iterable: I, size: usize) -> Self {
         let mut btree = VecBtree::<T>::new(Some(size));
 
@@ -46,18 +50,33 @@ impl <T: Sized + PartialOrd + PartialEq> FromIteratorSized<T> for VecBtree<T> {
     }
 }
 
-impl <T: Sized + PartialOrd + PartialEq> FromIterator<T> for VecBtree<T> {
+impl<T: 'static + Sized + PartialOrd + PartialEq + Sync + Send> FromIterator<T> for VecBtree<T> {
     fn from_iter<I: IntoIterator<Item=T>>(iterable: I) -> Self {
         VecBtree::<T>::from_iter_sized(iterable, MAX_SIZE)
     }
 }
 
-impl <T: Sized + PartialOrd + PartialEq> VecBtree<T> {
+// impl <T: 'static + Sized + PartialOrd + PartialEq + Sync + Send> fmt::Display for VecBtree<T> {
+//     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+//         let iter = self.buf.iter();
+//         // Use `self.number` to refer to each positional data point.
+//         for n in self.buf {
+//             println!(f, "{}", String::from(n.data));
+//         }
+//         Ok(())
+//         // for e in 0..self.buf.len() {
+//         //     write!(f, "{}", self.buf[i]);
+//         // }
+//     }
+// }
+
+
+impl<T: 'static + Sized + PartialOrd + PartialEq + Sync + Send> VecBtree<T> {
     pub fn new(size: Option<usize>) -> Self {
         match size {
-            None => VecBtree { buf: Vec::new() },
+            None => VecBtree { buf: Vec::<Node<T>>::new() },
             Some(length) => match length {
-                length if length <= MAX_SIZE => VecBtree { buf: Vec::with_capacity(length) },
+                length if length <= MAX_SIZE => VecBtree { buf: Vec::<Node<T>>::with_capacity(length) },
                 _ => panic!("initial size must be less or equal to usize={} (pagination not yet implemented)", MAX_SIZE)
             }
         }
@@ -87,11 +106,9 @@ impl <T: Sized + PartialOrd + PartialEq> VecBtree<T> {
                     let idx = (start + end >> 1isize) as usize;
                     if self.buf[idx].data == *data {
                         return Some(&mut self.buf[idx].data);
-                    }
-                    else if self.buf[idx].data < *data {
+                    } else if self.buf[idx].data < *data {
                         start = idx as isize + 1;
-                    }
-                    else {
+                    } else {
                         end = idx as isize - 1;
                     }
                 }
@@ -100,74 +117,92 @@ impl <T: Sized + PartialOrd + PartialEq> VecBtree<T> {
         }
     }
 
-}
+    // fn search_fast(&mut self, data: &T, start_idx: &mut isize, end_idx: &mut isize, nb_chunk: usize) -> Option<&mut T> {
+    //     let rest: usize = self.buf.len() % nb_chunk;
+    //     // let chunk_length: usize = self.buf.len() / nb_chunk;
+    //
+    //     crossbeam::scope(|spawner| {
+    //        for chunk in self.buf.chunks_mut(3) {
+    //            let mut startIdx = 0isize;
+    //            let mut chunk_length = chunk.len() as isize;
+    //            for elem in chunk.iter_mut() {
+    //                let data = elem.data;
+    //                spawner.spawn(move || self.binary_search(data, &mut startIdx, &mut chunk_length))
+    //            }
+    //            // spawner.spawn(move || {
+    //            //     for &mut elem in chunk.iter_mut() {
+    //            //
+    //            //         println!("{:?}", *elem);
+    //            //         // println!("{}", *elem.data);
+    //            //         // match elem {
+    //            //         //     &mut v => println!("{}", v.data);
+    //            //         // }
+    //            //     }
+    //            // });
+    //        }
+    //     });
+    //     None
+    // }
+
+//     fn search_fast(&'static mut self, data: &'static T, start_idx: &mut isize, end_idx: &mut isize, nb_chunk: usize) -> Option<& mut T> {
+//         let chunk_length: usize = self.buf.len() / nb_chunk;
+//         // let chunk_length: usize = self.buf.len() / nb_chunk;
+//         let (tx, rx): (Sender<Option<&mut T>>, Receiver<Option<&mut T>>) = mpsc::channel();
+//         // let mut threads = Vec::with_capacity(chunk_length);
+//         let responses = Vec::<Option<&mut T>>::with_capacity(chunk_length);
 //
-// pub fn search_fast<'a, T>(buf: &'a mut Vec<Node<T>>, data: &T, nb_chunk: usize) -> Option<&'a mut T> {
-//     // let rest = self.buf.len() % nb_chunk;
-//     let chunk_size: usize = (buf.len() / nb_chunk); // + if rest > 0 { 1 } else { 0 };
-//     let mut chunks: Vec<&mut [Node<T>]> = buf.chunks_mut(chunk_size).collect();
-//     // let mut result: &mut Option<&mut T> = &mut None;
+//         let chunks_mut: ChunksMut<Node<T>> = self.buf.chunks_mut(chunk_length);
 //
-//     crossbeam::scope(|spawner | {
-//         let startIdx = &mut 0isize;
-//         let mut i: usize = 0;
-//         while let false = i < chunks.len() {
-//             spawner.spawn(|| {
-//                 binary_search_in(&mut Vec::from(&mut chunks[i]), data, startIdx, *chunks[i].len() - 1);
+//         for chunk in chunks_mut.into_iter() {
+//             let tx = tx.clone();
+//             thread::spawn( || {
+//                 let mut begin = 0isize;
+//                 let mut end = chunk.len() as isize;
+//                 // let option: Option<&'static mut T> = VecBtree::binary_search(self, data, &mut begin, &mut end);
+//
+//                 tx.send(None);
 //             });
-//             i += 1;
+//             // threads.push(thread);
 //         }
-//         // for chunck in chunks {
-//         //     spawner.spawn(|| {
-//         //         match (VecBtree::binary_search_in(chunck, data, startIdx, &mut (chunck.len() as isize - 1))) {
-//         //             Some(e) => {
-//         //
-//         //             }
-//         //             None => None
-//         //         }
-//         //     });
-//         // }
-//     });
 //
-//     None
-// }
-//
-// fn binary_search_in<'a, T>(buf: &'a mut Vec<Node<T>>, data: &T, start_idx: &mut isize, end_idx: &mut isize) -> Option<&'a mut T> {
-//     match (*start_idx, *end_idx) {
-//         (mut start, mut end) => {
-//             while start <= end {
-//                 let idx = (start + end >> 1isize) as usize;
-//                 if *buf[idx].data == *data {
-//                     return Some(&mut *buf[idx].data);
-//                 }
-//                 else if *buf[idx].data < *data {
-//                     start = idx as isize + 1;
-//                 }
-//                 else {
-//                     end = idx as isize - 1;
-//                 }
-//             }
-//             None
+//         for _ in 0..chunk_length {
+//             let result = rx.recv();
 //         }
+//
+//         None
 //     }
+//
+}
+// pub fn search<T: 'static + Sized + PartialOrd + PartialEq + Sync + Send>(btree: &'static mut VecBtree<T>, data: &'static T) -> Option<&'static mut T> {
+//     binary_search::<T>(btree, data, &mut 0isize, &mut (btree.buf.len() as isize - 1))
 // }
-//
-// impl <T: Sized + PartialOrd + PartialEq> FromIterator<Node<T>> for std::vec::Vec<&mut [T]> {
-//     fn from_iter<I: IntoIterator<Item=Node<T>>>(iterable: I) -> Self {
-//         let mut vec: Vec<&mut [Node<T>]> = Vec::with_capacity(MAX_SIZE);
-//
-//         for i in iterable {
-//             vec.push(i);
-//         }
-//
-//         vec
-//     }
-// }
+
+fn binary_search<'a, T: std::cmp::PartialEq + std::cmp::PartialOrd>(buf: &'a [Node<T>], data: &'a T, start_idx: &'a isize, end_idx: &'a isize) -> Option<&'a T> {
+    match (*start_idx, *end_idx) {
+        (mut start, mut end) => {
+            while start <= end {
+                let idx = (start + end >> 1isize) as usize;
+                if buf[idx].data == *data {
+                    return Some(&buf[idx].data);
+                } else if buf[idx].data < *data {
+                    start = idx as isize + 1;
+                } else {
+                    end = idx as isize - 1;
+                }
+            }
+            None
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::borrow::Borrow;
+    use std::sync::{Arc, Mutex};
+    use std::ops::RangeInclusive;
+    use std::thread::spawn;
+    use crossbeam_channel::bounded;
 
     #[test]
     #[should_panic]
@@ -226,7 +261,7 @@ mod tests {
         let mut ints = VecBtree::from_iter((0..100000).collect::<Vec<i32>>());
         let mut letters = VecBtree::from_iter_sized(('a'..='z').collect::<Vec<char>>(), 26);
 
-         // println!("{:?}", letters);
+        // println!("{:?}", letters);
 
         assert_eq!(Some(&mut 99999), ints.search(&99999));
         assert_eq!(Some(&mut 35321), ints.search(&35321));
@@ -239,5 +274,42 @@ mod tests {
         assert_eq!(Some(&mut 'z'), letters.search(&'z'));
         assert_eq!(None, letters.search(&'Z'));
         assert_eq!(None, letters.search(&'{'));
+    }
+
+    #[test]
+    fn test_thread() {
+        println!("option : {:?}", test_concurrent_search());
+    }
+
+    fn test_concurrent_search() -> Option<char> {
+        let chunk_div = 4usize;
+        let mut btree = VecBtree::from_iter_sized(('a'..='z').collect::<Vec<char>>(), 26);
+        let nb_chunk = (btree.buf.len() / chunk_div) + (if btree.buf.len() % chunk_div > 0 { 1 } else { 0 });
+        let mut letter = 'z';
+        let mut result: Option<char> = None;
+        let lines: Vec<&mut [Node<char>]> = btree.buf.chunks_mut(nb_chunk).collect();
+        let (s, r): (crossbeam_channel::Sender<char>, crossbeam_channel::Receiver<char>) = bounded(nb_chunk);
+
+        crossbeam::scope(|spawner| {
+            for (i, line) in lines.into_iter().enumerate() {
+                let sender = s.clone();
+                let handler = spawner.spawn(move |scope| {
+                    if let Some(v) = binary_search(line, &letter, &0isize, &((line.len() - 1usize) as isize)) {
+                        println!("i : {}, buf: {:?}, found {:?}", i, line, v);
+                        sender.send(*v);
+                    }
+                });
+                if !r.is_empty() {
+                    break;
+                }
+            }
+        });
+
+        if let Ok(res) = r.recv() { result = Some(res) };
+
+        drop(s);
+        drop(r);
+
+        result
     }
 }
